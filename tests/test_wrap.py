@@ -414,6 +414,52 @@ class TestOpenAIWrapper:
         assert result == "response"
         mock_ttc.compress_chat.assert_awaited_once()
 
+    def test_sync_compress_failure_falls_through_uncompressed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from thetokencompany.openai import with_compression
+
+        mock_client = MagicMock()
+        original_create = MagicMock(return_value="response")
+        mock_client.chat.completions.create = original_create
+        original_messages = [{"role": "user", "content": "hello"}]
+
+        with patch("thetokencompany.openai.TheTokenCompany") as MockTTC:
+            mock_ttc = MockTTC.return_value
+            mock_ttc.compress_chat.side_effect = RuntimeError("backend 503")
+
+            wrapped = with_compression(mock_client, compression_api_key="ttc-test")
+            result = wrapped.chat.completions.create(model="gpt-4o", messages=original_messages)
+
+        # The customer's call still succeeds, with the ORIGINAL messages.
+        assert result == "response"
+        assert original_create.call_args[1]["messages"] == original_messages
+        assert "sending uncompressed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_compress_failure_falls_through_uncompressed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from thetokencompany.openai import with_compression
+
+        mock_client = MagicMock()
+        original_create = AsyncMock(return_value="response")
+        mock_client.chat.completions.create = original_create
+        original_messages = [{"role": "user", "content": "hello"}]
+
+        with patch("thetokencompany.openai.AsyncTheTokenCompany") as MockTTC:
+            mock_ttc = MockTTC.return_value
+            mock_ttc.compress_chat = AsyncMock(side_effect=RuntimeError("backend 503"))
+
+            wrapped = with_compression(mock_client, compression_api_key="ttc-test")
+            result = await wrapped.chat.completions.create(
+                model="gpt-4o", messages=original_messages
+            )
+
+        assert result == "response"
+        assert original_create.call_args[1]["messages"] == original_messages
+        assert "sending uncompressed" in caplog.text
+
 
 class TestAnthropicWrapper:
     def test_compresses_system_string(self) -> None:

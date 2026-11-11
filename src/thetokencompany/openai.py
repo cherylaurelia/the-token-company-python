@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import logging
 from typing import Any
 
 import httpx
@@ -17,6 +18,8 @@ from thetokencompany._compress import (
 )
 from thetokencompany._constants import BEAR_2
 from thetokencompany._types import CompressionStats
+
+logger = logging.getLogger("thetokencompany")
 
 
 def with_compression(
@@ -61,11 +64,17 @@ def with_compression(
                 # One request for the whole conversation — the server walks the
                 # roles, compresses every segment concurrently, and serves the
                 # re-sent history from cache.
-                result = await async_ttc.compress_chat(
-                    kwargs["messages"], model=model, fmt="openai", aggressiveness=role_aggr
-                )
-                kwargs["messages"] = result.messages
-                stats._record_chat(result)
+                try:
+                    result = await async_ttc.compress_chat(
+                        kwargs["messages"], model=model, fmt="openai", aggressiveness=role_aggr
+                    )
+                    kwargs["messages"] = result.messages
+                    stats._record_chat(result)
+                except Exception as exc:
+                    # Graceful degradation: a compression-backend fault must never
+                    # break the customer's underlying LLM call. Fall through with
+                    # the original, uncompressed messages.
+                    logger.warning("TTC compression failed (%s); sending uncompressed.", exc)
             return await original_create(*args, **kwargs)
 
         client.chat.completions.create = async_create
@@ -79,11 +88,17 @@ def with_compression(
         @functools.wraps(original_create)
         def sync_create(*args: Any, **kwargs: Any) -> Any:
             if "messages" in kwargs:
-                result = sync_ttc.compress_chat(
-                    kwargs["messages"], model=model, fmt="openai", aggressiveness=role_aggr
-                )
-                kwargs["messages"] = result.messages
-                stats._record_chat(result)
+                try:
+                    result = sync_ttc.compress_chat(
+                        kwargs["messages"], model=model, fmt="openai", aggressiveness=role_aggr
+                    )
+                    kwargs["messages"] = result.messages
+                    stats._record_chat(result)
+                except Exception as exc:
+                    # Graceful degradation: a compression-backend fault must never
+                    # break the customer's underlying LLM call. Fall through with
+                    # the original, uncompressed messages.
+                    logger.warning("TTC compression failed (%s); sending uncompressed.", exc)
             return original_create(*args, **kwargs)
 
         client.chat.completions.create = sync_create
